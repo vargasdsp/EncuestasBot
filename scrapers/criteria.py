@@ -116,7 +116,7 @@ def check() -> Entrega | None:
             titulo=titulo,
             fecha=fecha,
             resumen=None,
-            link=link if link != URL else f"https://www.criteria.cl/agenda/{titulo.lower().replace(' ', '-').replace(':', '').strip('-')}/",
+            link=link if link != URL else URL,
             pdf_url=pdf_url,
             id_unico=id_unico,
         )

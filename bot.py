@@ -38,7 +38,7 @@ CHAT_ID = os.environ["TELEGRAM_CHAT_ID"]
 ADMIN_ID = int(os.environ["TELEGRAM_ADMIN_ID"])
 CHECK_INTERVAL = int(os.environ.get("CHECK_INTERVAL_MINUTES", "60"))
 DB_PATH = os.environ.get("DATABASE_PATH", "/data/state.db")
-FAILURE_ALERT_THRESHOLD = 3
+FAILURE_ALERT_THRESHOLD = 10
 
 SCRAPERS = {
     "CADEM – PLAZA PÚBLICA": cadem.check,
@@ -58,22 +58,25 @@ storage = Storage(DB_PATH)
 async def run_check_cycle(app: Application) -> None:
     log.info("Starting check cycle…")
     for fuente, scraper_fn in SCRAPERS.items():
+        scraper_error: str | None = None
         try:
             entrega: Optional[Entrega] = scraper_fn()
         except Exception as exc:
             log.error("Scraper %s raised unhandled exception: %s", fuente, exc, exc_info=True)
+            scraper_error = f"{type(exc).__name__}: {exc}"
             entrega = None
 
         if entrega is None:
             count = storage.record_failure(fuente)
             log.warning("Scraper %s returned no entry (consecutive failures: %d)", fuente, count)
             if count == FAILURE_ALERT_THRESHOLD:
+                error_detail = f"\n\nÚltimo error: `{scraper_error}`" if scraper_error else "\n\n_(sin excepción — el scraper no encontró contenido en la página)_"
                 try:
                     await app.bot.send_message(
                         chat_id=ADMIN_ID,
                         text=(
-                            f"⚠️ El scraper de *{fuente}* lleva {count} fallos seguidos.\n"
-                            "Probablemente el sitio cambió su estructura HTML."
+                            f"⚠️ El scraper de *{fuente}* lleva {count} fallos seguidos."
+                            f"{error_detail}"
                         ),
                         parse_mode="Markdown",
                     )
