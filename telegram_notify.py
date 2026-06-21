@@ -17,15 +17,66 @@ log = logging.getLogger(__name__)
 
 TELEGRAM_CAPTION_LIMIT = 1024
 
+MESES_ES = {
+    1: "enero", 2: "febrero", 3: "marzo", 4: "abril",
+    5: "mayo", 6: "junio", 7: "julio", 8: "agosto",
+    9: "septiembre", 10: "octubre", 11: "noviembre", 12: "diciembre",
+}
+
+MESES_NUM = {v: k for k, v in MESES_ES.items()}
+
+
+def _now_es() -> str:
+    """Current UTC time as a Spanish string."""
+    now = datetime.now(timezone.utc)
+    return f"{now.day} de {MESES_ES[now.month]} de {now.year}, {now.strftime('%H:%M')}h UTC"
+
+
+def _fecha_to_iso(fecha: str) -> str | None:
+    """Try to convert a Spanish date string like '21 de junio de 2026' to '2026.06.21'."""
+    if not fecha:
+        return None
+    # Try ISO format first (e.g. from <time datetime="2026-06-21">)
+    m = re.search(r"(\d{4})-(\d{2})-(\d{2})", fecha)
+    if m:
+        return f"{m.group(1)}.{m.group(2)}.{m.group(3)}"
+    # Spanish: "21 de junio de 2026" or "21 junio 2026"
+    m = re.search(
+        r"(\d{1,2})\s+(?:de\s+)?("
+        + "|".join(MESES_NUM.keys())
+        + r")\s+(?:de\s+)?(\d{4})",
+        fecha, re.IGNORECASE,
+    )
+    if m:
+        day = int(m.group(1))
+        month = MESES_NUM[m.group(2).lower()]
+        year = int(m.group(3))
+        return f"{year}.{month:02d}.{day:02d}"
+    # "junio 2026" (no day)
+    m = re.search(
+        r"(" + "|".join(MESES_NUM.keys()) + r")\s+(\d{4})",
+        fecha, re.IGNORECASE,
+    )
+    if m:
+        month = MESES_NUM[m.group(1).lower()]
+        year = int(m.group(2))
+        return f"{year}.{month:02d}"
+    return None
+
+
+def _pdf_filename(entrega: Entrega) -> str:
+    """Build a clean filename: Fuente_YYYY.MM.DD.pdf"""
+    fuente_slug = re.sub(r"\s+", "_", entrega.fuente.split("–")[-1].strip())
+    fuente_slug = re.sub(r"[^\w]", "_", fuente_slug).strip("_")
+    iso = _fecha_to_iso(entrega.fecha or "")
+    if iso:
+        return f"{fuente_slug}_{iso}.pdf"
+    # Fallback: use today's date
+    today = datetime.now(timezone.utc)
+    return f"{fuente_slug}_{today.year}.{today.month:02d}.{today.day:02d}.pdf"
+
 
 def _build_message(entrega: Entrega) -> str:
-    now = datetime.now(timezone.utc).strftime("%-d de %B de %Y, %H:%Mh UTC")
-    # Windows-compatible fallback (%-d not supported on Windows strftime)
-    try:
-        now = datetime.now(timezone.utc).strftime("%-d de %B de %Y, %H:%Mh UTC")
-    except ValueError:
-        now = datetime.now(timezone.utc).strftime("%d de %B de %Y, %H:%Mh UTC").lstrip("0")
-
     lines = [f"🚨 NUEVA ENTREGA: {entrega.fuente}"]
     if entrega.titulo:
         lines.append(f"📰 {entrega.titulo}")
@@ -37,7 +88,7 @@ def _build_message(entrega: Entrega) -> str:
             resumen += "…"
         lines.append(resumen)
     lines.append(f"🔗 {entrega.link}")
-    lines.append(f"⏱ Detectado: {now}")
+    lines.append(f"⏱ Detectado: {_now_es()}")
     return "\n".join(lines)
 
 
@@ -50,7 +101,6 @@ async def send_entrega(bot: Bot, chat_id: str, entrega: Entrega) -> None:
             await _send_with_pdf(bot, chat_id, message_text, pdf_bytes, entrega)
             return
 
-    # No PDF available – send text only
     await bot.send_message(
         chat_id=chat_id,
         text=message_text,
@@ -60,8 +110,6 @@ async def send_entrega(bot: Bot, chat_id: str, entrega: Entrega) -> None:
 
 
 async def send_manual_descifra(bot: Bot, chat_id: str, pdf_bytes: bytes, fecha: Optional[str] = None) -> None:
-    """Send a manually provided Descifra PDF to the community."""
-    from scrapers.base import Entrega
     entrega = Entrega(
         fuente="ENCUESTA DESCIFRA",
         titulo="Encuesta Descifra",
@@ -76,7 +124,7 @@ async def send_manual_descifra(bot: Bot, chat_id: str, pdf_bytes: bytes, fecha: 
 
 
 async def _send_with_pdf(bot: Bot, chat_id: str, message_text: str, pdf_bytes: bytes, entrega: Entrega) -> None:
-    filename = re.sub(r"\W+", "_", entrega.fuente.lower()).strip("_") + ".pdf"
+    filename = _pdf_filename(entrega)
 
     if len(message_text) <= TELEGRAM_CAPTION_LIMIT:
         await bot.send_document(
@@ -86,14 +134,13 @@ async def _send_with_pdf(bot: Bot, chat_id: str, message_text: str, pdf_bytes: b
             caption=message_text,
         )
     else:
-        # Caption too long: send text first, then PDF without caption
         await bot.send_message(chat_id=chat_id, text=message_text, disable_web_page_preview=False)
         await bot.send_document(
             chat_id=chat_id,
             document=io.BytesIO(pdf_bytes),
             filename=filename,
         )
-    log.info("Sent PDF notification for %s", entrega.fuente)
+    log.info("Sent PDF notification for %s — file: %s", entrega.fuente, filename)
 
 
 def _download_pdf(url: str) -> Optional[bytes]:

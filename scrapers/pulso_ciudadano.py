@@ -19,45 +19,74 @@ log = logging.getLogger(__name__)
 
 INDEX_URL = "https://chile.activasite.com/pulso-ciudadano/"
 
+_DATE_RE = re.compile(
+    r"\d{1,2}\s+(?:de\s+)?(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
+    r"septiembre|octubre|noviembre|diciembre)\s+(?:de\s+)?\d{4}",
+    re.IGNORECASE,
+)
 
-def _find_pdf_in_study_page(page_url: str) -> str | None:
-    """Visit the study page and find the Descargar button."""
+
+def _scrape_study_page(page_url: str) -> tuple[str | None, str | None]:
+    """Return (pdf_url, fecha) from the individual study page."""
     try:
         resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
     except Exception as exc:
         log.warning("PULSO CIUDADANO – error fetching study page %s: %s", page_url, exc)
-        return None
+        return None, None
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Look for "Descargar" link first
+    # --- Date ---
+    fecha = None
+    time_tag = soup.find("time")
+    if time_tag:
+        fecha = time_tag.get("datetime") or time_tag.get_text(strip=True)
+    if not fecha:
+        for tag in soup.find_all(["span", "div", "p"], class_=re.compile(r"date|fecha|published")):
+            m = _DATE_RE.search(tag.get_text(strip=True))
+            if m:
+                fecha = m.group(0)
+                break
+    if not fecha:
+        for meta in soup.find_all("meta", {"property": re.compile(r"article:published")}):
+            m = re.search(r"\d{4}-\d{2}-\d{2}", meta.get("content", ""))
+            if m:
+                fecha = m.group(0)
+                break
+
+    # --- PDF: "Descargar" button ---
+    pdf_url = None
     for a in soup.find_all("a", href=True):
         text = a.get_text(strip=True).lower()
         href = a["href"]
         if not href.startswith("http"):
             href = "https://chile.activasite.com" + href
         if "descargar" in text or "download" in text:
-            # Follow redirect to get actual PDF URL
             try:
                 r = requests.get(
                     href, headers=HEADERS, timeout=REQUEST_TIMEOUT,
                     allow_redirects=True, stream=True,
                 )
-                return r.url
+                pdf_url = r.url
             except Exception:
-                return href
+                pdf_url = href
+            break
 
-    # Fallback: any direct .pdf link
-    for a in soup.find_all("a", href=True):
-        href = a["href"]
-        if not href.startswith("http"):
-            href = "https://chile.activasite.com" + href
-        if href.endswith(".pdf") or "pdf" in href.lower():
-            return href
+    # Fallback: any .pdf link
+    if not pdf_url:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if not href.startswith("http"):
+                href = "https://chile.activasite.com" + href
+            if href.endswith(".pdf") or "pdf" in href.lower():
+                pdf_url = href
+                break
 
-    log.warning("PULSO CIUDADANO – no Descargar/PDF link found in %s", page_url)
-    return None
+    if not pdf_url:
+        log.warning("PULSO CIUDADANO – no Descargar/PDF link found in %s", page_url)
+
+    return pdf_url, fecha
 
 
 def check() -> Entrega | None:
@@ -70,7 +99,6 @@ def check() -> Entrega | None:
 
     soup = BeautifulSoup(resp.text, "html.parser")
 
-    # Find cards/articles that mention "Pulso Ciudadano"
     for article in soup.find_all(["article", "div", "li"], recursive=True):
         heading = article.find(re.compile(r"^h[1-6]$"))
         if not heading:
@@ -79,7 +107,7 @@ def check() -> Entrega | None:
         if not re.search(r"Pulso\s+Ciudadano", titulo, re.IGNORECASE):
             continue
 
-        # Find the "Ver Noticia" link specifically
+        # Find "Ver Noticia" link specifically
         study_url = None
         for a in article.find_all("a", href=True):
             text = a.get_text(strip=True).lower()
@@ -90,7 +118,7 @@ def check() -> Entrega | None:
                 study_url = href
                 break
 
-        # Fallback: use the heading link
+        # Fallback: heading link
         if not study_url:
             link_tag = heading.find("a") or article.find("a", href=True)
             if link_tag:
@@ -102,23 +130,20 @@ def check() -> Entrega | None:
 
         slug = study_url.rstrip("/").split("/")[-1] or re.sub(r"\W+", "-", titulo.lower())[:80]
 
-        # Date
+        # Try date from index card first
         fecha = None
-        date_match = re.search(
-            r"(?:enero|febrero|marzo|abril|mayo|junio|julio|agosto|"
-            r"septiembre|octubre|noviembre|diciembre)\s+\d{4}",
-            titulo,
-            re.IGNORECASE,
-        )
-        if date_match:
-            fecha = date_match.group(0)
+        m = _DATE_RE.search(titulo)
+        if m:
+            fecha = m.group(0)
         else:
             time_tag = article.find("time")
             if time_tag:
-                fecha = time_tag.get("datetime", time_tag.get_text(strip=True))
+                fecha = time_tag.get("datetime") or time_tag.get_text(strip=True)
 
-        # Visit the study page and find the Descargar button → PDF
-        pdf_url = _find_pdf_in_study_page(study_url)
+        # Visit study page → PDF + better date
+        pdf_url, fecha_page = _scrape_study_page(study_url)
+        if fecha_page and not fecha:
+            fecha = fecha_page
 
         return Entrega(
             fuente="PULSO CIUDADANO – ACTIVA RESEARCH",
