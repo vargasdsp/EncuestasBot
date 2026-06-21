@@ -1,0 +1,7 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -m py_compile bot.py storage.py telegram_notify.py scrapers/base.py scrapers/cadem.py scrapers/criteria.py scrapers/cep.py scrapers/panel_ciudadano.py scrapers/pulso_ciudadano.py scrapers/descifra.py)"
+    ]
+  }
+}
