@@ -129,6 +129,53 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None
     await update.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
 
+async def cmd_resend(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """Re-send all currently known entries to the chat (admin only)."""
+    if update.effective_user.id != ADMIN_ID:
+        await update.message.reply_text("No autorizado.")
+        return
+
+    rows = storage.get_all_last_seen()
+    if not rows:
+        await update.message.reply_text("No hay entregas registradas. Ejecuta /check primero.")
+        return
+
+    await update.message.reply_text(f"⏳ Reenviando {len(rows)} entregas al chat…")
+
+    for row in rows:
+        # Re-run the scraper to get full Entrega (including pdf_url)
+        scraper_fn = SCRAPERS.get(row["fuente"])
+        entrega = None
+        if scraper_fn:
+            try:
+                entrega = scraper_fn()
+            except Exception as exc:
+                log.warning("Could not re-fetch %s for resend: %s", row["fuente"], exc)
+
+        # If scraper failed, build a minimal Entrega from stored data
+        if entrega is None:
+            from scrapers.base import Entrega as EntregaClass
+            entrega = EntregaClass(
+                fuente=row["fuente"],
+                titulo=row["titulo"] or "",
+                fecha=None,
+                resumen=None,
+                link=row["link"] or "",
+                pdf_url=None,
+                id_unico=row["id_unico"],
+            )
+
+        try:
+            await send_entrega(context.bot, CHAT_ID, entrega)
+        except Exception as exc:
+            log.error("Error sending %s on resend: %s", row["fuente"], exc)
+            await update.message.reply_text(f"❌ Error enviando {row['fuente']}: {exc}")
+
+        time.sleep(2)
+
+    await update.message.reply_text("✅ Reenvío completado.")
+
+
 async def cmd_check(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if update.effective_user.id != ADMIN_ID:
         await update.message.reply_text("No autorizado.")
@@ -239,6 +286,7 @@ def main() -> None:
 
     app.add_handler(CommandHandler("status", cmd_status))
     app.add_handler(CommandHandler("check", cmd_check))
+    app.add_handler(CommandHandler("resend", cmd_resend))
     app.add_handler(CommandHandler("descifra", cmd_descifra))
     app.add_handler(
         MessageHandler(filters.Document.PDF & filters.ChatType.PRIVATE, handle_pdf_message)
