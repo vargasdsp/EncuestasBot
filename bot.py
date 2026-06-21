@@ -82,6 +82,11 @@ async def run_check_cycle(app: Application) -> None:
         else:
             storage.reset_failures(fuente)
             if storage.is_new(fuente, entrega.id_unico):
+                if storage.get_last_seen(fuente) is None:
+                    # First time ever seeing this source — seed without notifying
+                    log.info("Seeding first entry for %s: %s (no notification)", fuente, entrega.id_unico)
+                    storage.mark_notified(fuente, entrega.id_unico, entrega.titulo, entrega.link)
+                    continue
                 log.info("New entry detected for %s: %s", fuente, entrega.id_unico)
                 try:
                     await send_entrega(app.bot, CHAT_ID, entrega)
