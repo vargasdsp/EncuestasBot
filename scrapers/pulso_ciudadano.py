@@ -18,6 +18,10 @@ INDEX_URL = "https://chile.activasite.com/pulso-ciudadano/"
 
 
 def _find_pdf_in_page(page_url: str) -> str | None:
+    """
+    Visit the individual study/noticia page and find the Descargar button.
+    Activa's flow: index → "Ver Noticia" → study page → "Descargar" button → PDF.
+    """
     try:
         resp = requests.get(page_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
         resp.raise_for_status()
@@ -26,17 +30,31 @@ def _find_pdf_in_page(page_url: str) -> str | None:
         return None
 
     soup = BeautifulSoup(resp.text, "html.parser")
+
+    # Priority: explicit "Descargar" button / link
     for a in soup.find_all("a", href=True):
         href = a["href"]
         text = a.get_text(strip=True).lower()
-        if (
-            href.endswith(".pdf")
-            or "pdf" in text
-            or "descargar" in text
-            or "informe" in text
-            or "download" in text
-        ):
-            return href if href.startswith("http") else "https://chile.activasite.com" + href
+        if not href.startswith("http"):
+            href = "https://chile.activasite.com" + href
+        if "descargar" in text or "download" in text:
+            # If it's a short/redirect link, follow it
+            if not href.endswith(".pdf"):
+                try:
+                    r = requests.head(href, headers=HEADERS, timeout=REQUEST_TIMEOUT, allow_redirects=True)
+                    href = r.url
+                except Exception:
+                    pass
+            return href
+
+    # Fallback: any .pdf link on the page
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        if not href.startswith("http"):
+            href = "https://chile.activasite.com" + href
+        if href.endswith(".pdf") or "pdf" in href.lower():
+            return href
+
     return None
 
 

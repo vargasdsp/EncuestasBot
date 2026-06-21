@@ -5,11 +5,11 @@ Handles sending text messages and PDF documents with proper caption length limit
 import io
 import logging
 import re
+from datetime import datetime, timezone
 from typing import Optional
 
 import requests
 from telegram import Bot
-from telegram.constants import ParseMode
 
 from scrapers.base import Entrega, HEADERS, REQUEST_TIMEOUT
 
@@ -19,16 +19,25 @@ TELEGRAM_CAPTION_LIMIT = 1024
 
 
 def _build_message(entrega: Entrega) -> str:
+    now = datetime.now(timezone.utc).strftime("%-d de %B de %Y, %H:%Mh UTC")
+    # Windows-compatible fallback (%-d not supported on Windows strftime)
+    try:
+        now = datetime.now(timezone.utc).strftime("%-d de %B de %Y, %H:%Mh UTC")
+    except ValueError:
+        now = datetime.now(timezone.utc).strftime("%d de %B de %Y, %H:%Mh UTC").lstrip("0")
+
     lines = [f"🚨 NUEVA ENTREGA: {entrega.fuente}"]
+    if entrega.titulo:
+        lines.append(f"📰 {entrega.titulo}")
     if entrega.fecha:
-        lines.append(f"🗓 {entrega.fecha}")
+        lines.append(f"🗓 Publicación: {entrega.fecha}")
     if entrega.resumen:
-        # Keep resumen short for Telegram
         resumen = entrega.resumen[:200]
         if len(entrega.resumen) > 200:
             resumen += "…"
         lines.append(resumen)
     lines.append(f"🔗 {entrega.link}")
+    lines.append(f"⏱ Detectado: {now}")
     return "\n".join(lines)
 
 

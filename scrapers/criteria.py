@@ -17,6 +17,26 @@ log = logging.getLogger(__name__)
 URL = "https://www.criteria.cl/agenda-criteria/"
 
 
+def _find_pdf_in_entry(entry_url: str) -> str | None:
+    """Visit the individual entry page and find the PDF download button."""
+    try:
+        resp = requests.get(entry_url, headers=HEADERS, timeout=REQUEST_TIMEOUT)
+        resp.raise_for_status()
+    except Exception as exc:
+        log.warning("CRITERIA – error fetching entry page %s: %s", entry_url, exc)
+        return None
+
+    soup = BeautifulSoup(resp.text, "html.parser")
+    for a in soup.find_all("a", href=True):
+        href = a["href"]
+        text = a.get_text(strip=True).lower()
+        if not href.startswith("http"):
+            href = "https://www.criteria.cl" + href
+        if "descargar" in text or "download" in text or href.endswith(".pdf") or "/r/" in href:
+            return _resolve_redirect(href)
+    return None
+
+
 def _resolve_redirect(url: str) -> str:
     """Follow redirects and return the final URL (used for short download links)."""
     try:
@@ -74,19 +94,27 @@ def check() -> Entrega | None:
     if date_match:
         fecha = date_match.group(0)
 
-    # Links
+    # Links – find the entry page link ("Resumen" / "Ver")
     link = URL
-    pdf_url = None
+    download_href = None
     for a in entry.find_all("a", href=True):
         text = a.get_text(strip=True).lower()
         href = a["href"]
         if not href.startswith("http"):
             href = "https://www.criteria.cl" + href
-        if "resumen" in text or "ver" in text:
+        if "resumen" in text or ("ver" in text and "descargar" not in text):
             link = href
         elif "descargar" in text or "download" in text or "/r/" in href:
-            # Resolve the short link to get the actual PDF URL
-            pdf_url = _resolve_redirect(href)
+            download_href = href
+
+    # If we found the entry page, visit it to look for the PDF button
+    pdf_url = None
+    if link != URL:
+        pdf_url = _find_pdf_in_entry(link)
+
+    # Fallback: resolve the short download link from the index page
+    if pdf_url is None and download_href:
+        pdf_url = _resolve_redirect(download_href)
 
     id_unico = fecha or link
 
